@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -33,6 +35,21 @@ type chainSchema struct {
 var reTargets = regexp.MustCompile("cosmos-sdk|tendermint/tendermint|/ibc")
 
 func main() {
+	registryDir := "registry"
+	switch fi, err := os.Lstat(registryDir); {
+	case err == nil && fi.IsDir():
+		// The directory exists, all great!
+
+	case os.IsNotExist(err):
+		// Download the zip file to.
+		if err := downloadAndUnzipRegistry(registryDir); err != nil {
+			panic(err)
+		}
+
+	default:
+		panic(err)
+	}
+
 	// 1. Git download the repo.
 	// Target: https://github.com/cosmos/chain-registry/archive/refs/heads/master.zip
 	bfs := os.DirFS("./registry")
@@ -112,4 +129,70 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func downloadAndUnzipRegistry(registryDir string) error {
+	res, err := http.Get(registryZipURL)
+	if err != nil {
+		return err
+	}
+	fzf, err := os.Create("registry.zip")
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(fzf, res.Body); err != nil {
+		return err
+	}
+	if err := fzf.Close(); err != nil {
+		return err
+	}
+	fzf, err = os.Open("registry.zip")
+	if err != nil {
+		return err
+	}
+	defer fzf.Close()
+
+	fi, err := fzf.Stat()
+	if err != nil {
+		return err
+	}
+	zr, err := zip.NewReader(fzf, fi.Size())
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(registryDir, 0755); err != nil {
+		return err
+	}
+	for _, zf := range zr.File {
+		if !strings.HasSuffix(zf.Name, "chain.json") {
+			continue
+		}
+		fullPath := filepath.Join(registryDir, zf.Name)
+		dirPath := filepath.Dir(fullPath)
+		if dirPath == "" {
+			continue
+		}
+		if err := os.MkdirAll(dirPath, 0755); err != nil {
+			return err
+		}
+		func() {
+			f, err := os.Create(fullPath)
+			if err != nil {
+				panic(err)
+			}
+			defer f.Close()
+
+			rz, err := zf.Open()
+			if err != nil {
+				panic(err)
+			}
+			if _, err = io.Copy(f, rz); err != nil {
+				panic(err)
+			}
+			rz.Close()
+		}()
+	}
+
+	return nil
 }
