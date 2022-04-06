@@ -26,6 +26,7 @@ type codebase struct {
 
 type chainSchema struct {
 	ChainName    string    `json:"chain_name"`
+	NetworkType  string    `json:"network_type"`
 	Status       string    `json:"status"`
 	PrettyName   string    `json:"pretty_name"`
 	Bech32Prefix string    `json:"bech32_prefix"`
@@ -33,6 +34,10 @@ type chainSchema struct {
 }
 
 var reTargets = regexp.MustCompile("cosmos-sdk|tendermint/tendermint|/ibc")
+
+func printHeader() {
+	fmt.Println("Chain,Git_Repo,Contact,Account_Manager,Is_mainnet,Mainnet GH release,CosmosSDK,Tendermint,IBC")
+}
 
 func main() {
 	registryDir := "registry"
@@ -49,6 +54,8 @@ func main() {
 	default:
 		panic(err)
 	}
+
+	printHeader()
 
 	// 1. Git download the repo.
 	// Target: https://github.com/cosmos/chain-registry/archive/refs/heads/master.zip
@@ -74,7 +81,7 @@ func main() {
 		}
 		if cs.Codebase == nil {
 			// TODO: Report this otherwise.
-			println("\033[31mNo codebase for " + path + "\033[00m")
+			fmt.Fprintln(os.Stderr, "\033[31mNo codebase for "+path+"\033[00m")
 			return nil
 		}
 		goModURL := cs.Codebase.GitRepoURL
@@ -109,20 +116,38 @@ func main() {
 			return err
 		}
 
-		matched := false
+		var tendermintVers, cosmosSDKVers, ibcVers string
 		for _, require := range modF.Require {
-			if reTargets.MatchString(require.Mod.Path) {
-				if !matched {
-					println("\n"+cs.PrettyName, cs.Codebase.RecommendedVersion)
-				}
-				matched = true
-				fmt.Printf("\tMod: %#v\n", require.Mod)
+			if !reTargets.MatchString(require.Mod.Path) {
+				continue
+			}
+			mod := require.Mod
+			switch modPath := mod.Path; {
+			case strings.HasSuffix(modPath, "cosmos-sdk"):
+				cosmosSDKVers = mod.Version
+			case strings.HasSuffix(modPath, "tendermint"):
+				tendermintVers = mod.Version
+			case strings.HasSuffix(modPath, "ibc-go"):
+				ibcVers = mod.Version
 			}
 		}
-		if !matched {
-			return fmt.Errorf("Nothing here")
+
+		// Table columns:
+		// Chain,Git_Repo,Contact,Account_Manager,Is_mainnet,Mainnet GH release, CosmosSDK,Tendermint, IBC
+		var contact, accountMgr string
+		isMainnet := "yes"
+		if nt := cs.NetworkType; nt != "mainnet" {
+			isMainnet = "no"
+			if nt == "" {
+				isMainnet = "?"
+			}
+		}
+		line := []string{
+			cs.PrettyName, cs.Codebase.GitRepoURL, contact, accountMgr, isMainnet,
+			cs.Codebase.RecommendedVersion, cosmosSDKVers, tendermintVers, ibcVers,
 		}
 
+		fmt.Println(strings.Join(line, ","))
 		// Find the requires for cosmos-sdk or tendermint.
 		return nil
 	})
