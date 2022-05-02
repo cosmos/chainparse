@@ -1,4 +1,4 @@
-module github.com/orijtech/chainparse
+module github.com/cosmos/chainparse
 
 go 1.19
 
