@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"flag"
 	"net/http"
 
@@ -11,6 +12,9 @@ import (
 
 	"github.com/cosmos/chainparse"
 )
+
+//go:embed mock.json
+var mockDataJSON []byte
 
 func main() {
 	ocAgentAddress := flag.String("ocagent-addr", "", "The address to connect to the OCAgent")
@@ -27,9 +31,16 @@ func main() {
 		panic(err)
 	}
 
+	if len(mockDataJSON) == 0 {
+		panic("mockDataJSON is empty!")
+	}
+
 	mux := http.NewServeMux()
 	cp := chainparse.NewChainParser(new(ochttp.Transport))
 	mux.HandleFunc("/", http.HandlerFunc(cp.FetchData))
+	mux.HandleFunc("/mock", http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.Write(mockDataJSON)
+	}))
 
 	logrus.WithFields(logrus.Fields{
 		"addr": *addr,

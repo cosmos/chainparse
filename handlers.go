@@ -39,8 +39,14 @@ func (cp *ChainParser) FetchData(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// 2. Normalize the schema data for quick lookups by key: O(n) -> O(1)
+	byPrettyName := make(map[string]*ChainSchema, len(chainSchemaL))
+	for _, cs := range chainSchemaL {
+		byPrettyName[cs.PrettyName] = cs
+	}
+
 	enc := json.NewEncoder(rw)
-	if err := enc.Encode(chainSchemaL); err != nil {
+	if err := enc.Encode(byPrettyName); err != nil {
 		logrus.WithContext(ctx).WithError(err).Error("failed to JSON marshal & send the retrieved chain info")
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 		return
