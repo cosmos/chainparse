@@ -30,4 +30,4 @@ function fetchAndPopulateSpreadsheet() {
         sheet.getRange(column, 2, 1, 1).setValue(codebase.git_repo);
         sheet.getRange(column, 7, 1, 1).setValue(codebase.recommended_version);
     });
-}uu
+}
