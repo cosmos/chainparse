@@ -16,6 +16,7 @@ import (
 
 	"go.opencensus.io/trace"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 
 	"github.com/sirupsen/logrus"
 )
@@ -64,6 +65,59 @@ func (fr *fetcher) fetchChainData(ctx context.Context) ([]*ChainSchema, error) {
 	}
 
 	return fr.retrieveChainSchema(ctx, registryDir)
+}
+
+func extractCosmosTuples(modF *modfile.File) (cosmosSDKVers, tendermintVers, ibcVers string) {
+	// 1. Firstly the Require directives.
+	// 2. Check the Replace directives as authoritative on
+	//    the final version and fork source. See https://github.com/cosmos/chainparse/issues/6
+
+	requires := make([]module.Version, 0, len(modF.Require))
+	for _, require := range modF.Require {
+		requires = append(requires, require.Mod)
+	}
+	cosmosSDKVers, tendermintVers, ibcVers = extractCosmosTuplesByVersion(requires, false)
+
+	replaces := make([]module.Version, 0, len(modF.Replace))
+	for _, replace := range modF.Replace {
+		replaces = append(replaces, replace.New)
+	}
+	csVersRep, tmVersRep, ibcVersRep := extractCosmosTuplesByVersion(replaces, true)
+
+	if csVersRep != "" {
+		cosmosSDKVers = csVersRep
+	}
+	if tmVersRep != "" {
+		tendermintVers = tmVersRep
+	}
+	if ibcVersRep != "" {
+		ibcVers = ibcVersRep
+	}
+	return
+}
+
+func extractCosmosTuplesByVersion(modSrcs []module.Version, isReplaceDirective bool) (cosmosSDKVers, tendermintVers, ibcVers string) {
+	// 1. Firstly the Requires.
+	// 2. Check the Replaces.
+	for _, mod := range modSrcs {
+		if !reTargets.MatchString(mod.Path) {
+			continue
+		}
+		suffix := ""
+		if isReplaceDirective {
+			// For replace directives we want to append the replaced version with the URL.
+			suffix = "@" + mod.Path
+		}
+		switch modPath := mod.Path; {
+		case strings.HasSuffix(modPath, "cosmos-sdk"):
+			cosmosSDKVers = mod.Version + suffix
+		case strings.HasSuffix(modPath, "tendermint"):
+			tendermintVers = mod.Version + suffix
+		case strings.HasSuffix(modPath, "ibc-go"):
+			ibcVers = mod.Version + suffix
+		}
+	}
+	return
 }
 
 func (fr *fetcher) retrieveChainSchema(ctx context.Context, registryDir string) (csL []*ChainSchema, rerr error) {
@@ -136,21 +190,7 @@ func (fr *fetcher) retrieveChainSchema(ctx context.Context, registryDir string) 
 			return err
 		}
 
-		var tendermintVers, cosmosSDKVers, ibcVers string
-		for _, require := range modF.Require {
-			if !reTargets.MatchString(require.Mod.Path) {
-				continue
-			}
-			mod := require.Mod
-			switch modPath := mod.Path; {
-			case strings.HasSuffix(modPath, "cosmos-sdk"):
-				cosmosSDKVers = mod.Version
-			case strings.HasSuffix(modPath, "tendermint"):
-				tendermintVers = mod.Version
-			case strings.HasSuffix(modPath, "ibc-go"):
-				ibcVers = mod.Version
-			}
-		}
+		tendermintVers, cosmosSDKVers, ibcVers := extractCosmosTuples(modF)
 
 		cs.IBCVersion = ibcVers
 		cs.TendermintVersion = tendermintVers
