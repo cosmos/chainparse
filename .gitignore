@@ -18,3 +18,4 @@
 *.sw[op]
 
 # Miscellaneous files
+bin/
