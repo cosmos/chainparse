@@ -19,3 +19,5 @@
 
 # Miscellaneous files
 bin/
+.DS_Store
+*.zip

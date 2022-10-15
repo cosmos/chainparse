@@ -17,9 +17,9 @@ func NewChainParser(rt http.RoundTripper) *ChainParser {
 	if rt == nil {
 		rt = http.DefaultTransport
 	}
-	return &ChainParser{fetcher: &fetcher{
-		rt: rt,
-	}}
+	return &ChainParser{
+		fetcher: newFetcher(rt),
+	}
 }
 
 func RetrieveChainData(ctx context.Context, rt http.RoundTripper) ([]*ChainSchema, error) {
