@@ -212,3 +212,15 @@ func TestFetchChainData(t *testing.T) {
 		t.Fatalf("Last3 mismatch: got - want +\n%s", diff)
 	}
 }
+
+func TestDefaultBranchForRepo(t *testing.T) {
+	ctx := context.Background()
+	fr := newFetcher(nil)
+	head, err := fr.defaultBranchForRepo(ctx, "Agoric/ag0", "https://github.com/Agoric/ag0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g, w := head, "Agoric"; g != w {
+		t.Fatalf("Default branch mismatch:\n\tGot:  %q\n\tWant: %q", g, w)
+	}
+}
