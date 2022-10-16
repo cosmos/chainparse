@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -13,13 +12,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/google/go-github/v47/github"
 	"go.opencensus.io/trace"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
@@ -49,22 +47,15 @@ type ChainSchema struct {
 	IBCVersion        string    `json:"ibc_version,omitempty"`
 	Contact           string    `json:"contact,omitempty"`
 	AccountManageer   string    `json:"account_mgr,omitempty"`
-
-	Latest *ChainSchema `json:"latest,omitempty"`
 }
 
 type fetcher struct {
 	rt http.RoundTripper
-
-	mu        sync.Mutex
-	repoCache map[string]*github.Repository
 }
 
 func newFetcher(rt http.RoundTripper) *fetcher {
 	return &fetcher{
 		rt: rt,
-
-		repoCache: make(map[string]*github.Repository),
 	}
 }
 
@@ -175,12 +166,6 @@ func (fr *fetcher) findChainJSONFiles(ctx context.Context, registryDir string) (
 	if err != nil {
 		return nil, err
 	}
-
-	sort.Slice(csL, func(i, j int) bool {
-		oi, oj := csL[i], csL[j]
-		return oi.ChainName < oj.ChainName
-	})
-
 	return csL, nil
 }
 
@@ -250,228 +235,32 @@ func (fr *fetcher) run(ctx context.Context, seedCS ChainSchema) (*ChainSchema, e
 	//      https://raw.githubusercontent.com/Agoric/ag0/agoric-3.1/go.mod
 	orgRepo := strings.TrimSuffix(gu.Path, "/")
 
-	// Derive a cancellable context from the prevailing one
-	// so that an exit will end all inflight HTTP requests.
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
 	client := &http.Client{Transport: fr.rt}
+	// 1. Retrieve the default branch for the repository.
+	cbase := seedCS.Codebase
+	gitShallowCloneURL := strings.ReplaceAll(cbase.GitRepoURL, "https://", "git@")
+	i := strings.LastIndex(gitShallowCloneURL, "/")
+	if i < 0 {
+		return nil, fmt.Errorf("could not retrieve the repoURL for: %q", seedCS.ChainName)
+	}
+	gitShallowCloneURL = gitShallowCloneURL[:i] + ":" + gitShallowCloneURL[i+1:] + ".git"
+	gitShallowCloneURL = cbase.GitRepoURL
+	if gitShallowCloneURL == "" {
+	}
 
-	frCh := make(chan *csErr, 1)
-	go func() {
-		defer close(frCh)
-
-		rawGoModURL := &url.URL{
-			Scheme: "https",
-			Host:   "raw.githubusercontent.com",
-			Path:   orgRepo + "/" + seedCS.Codebase.RecommendedVersion + "/go.mod",
-		}
-		url := rawGoModURL.String()
-		cs, err := fr.retrieveModFile(ctx, client, url, seedCS)
-		frCh <- &csErr{
-			url: url,
-			cs:  cs,
-			err: err,
-		}
-	}()
-
-	latestCh := make(chan *csErr, 1)
-	go func() (cs *ChainSchema, err error) {
-		var uri string
-
-		defer func() {
-			latestCh <- &csErr{cs: cs, err: err, url: uri}
-			close(latestCh)
-		}()
-
-		err = errors.New("skipping")
-		return
-
-		// 1. Retrieve the default branch for the repository.
-		defaultBranch, err := fr.defaultBranchForRepo(ctx, orgRepo, cs.Codebase.GitRepoURL)
-		if err != nil {
-			return nil, err
-		}
-
-		// 2. Finally fetch the default branch's go.mod file.
-		latestGoModURL := &url.URL{
-			Scheme: "https",
-			Host:   "raw.githubusercontent.com",
-			Path:   orgRepo + "/" + defaultBranch + "/go.mod",
-		}
-		uri = latestGoModURL.String()
-		return fr.retrieveModFile(ctx, client, uri, seedCS)
-	}()
-
-	faceValueCSE := <-frCh
-	if err := faceValueCSE.err; err != nil {
-		logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
-			"org_repo": orgRepo,
-		}).Error("failed to version from the chain-registry")
+	defaultBranch, err := fr.defaultBranchForRepo(ctx, orgRepo, gitShallowCloneURL)
+	if err != nil {
 		return nil, err
 	}
 
-	if faceValueCSE.cs == nil {
-		return nil, fmt.Errorf("could not obtain the chainSchema for: %q", orgRepo)
+	// 2. Finally fetch the default branch's go.mod file.
+	latestGoModURL := &url.URL{
+		Scheme: "https",
+		Host:   "raw.githubusercontent.com",
+		Path:   orgRepo + "/" + defaultBranch + "/go.mod",
 	}
-
-	lcse := <-latestCh
-	if lcse.err != nil {
-		// Some repos don't even exist like:
-		//      https://github.com/AIOZNetwork/go-aioz
-		// but if we can't get the latest schema we shouldn't error.
-		logrus.WithContext(ctx).WithError(lcse.err).WithFields(logrus.Fields{
-			"org_repo": orgRepo,
-		}).Error("failed to get the latest/live go.mod")
-	}
-
-	// Replace the authoritative ChainSchema with
-	// the version retrieved from the ChainRegistry
-	// at face value.
-	cs := faceValueCSE.cs
-	if lcse != nil && lcse.cs != nil && !reflect.DeepEqual(cs, lcse.cs) {
-		cs.Latest = lcse.cs
-	}
+	cs, err := fr.retrieveModFile(ctx, client, latestGoModURL.String(), seedCS)
 	return cs, nil
-}
-
-func (fr *fetcher) retrieveChainSchema(ctx context.Context, registryDir string) (csL []*ChainSchema, rerr error) {
-	ctx, span := trace.StartSpan(ctx, "retrieveChainSchema")
-	defer span.End()
-
-	// 1. Git download the repo.
-	// Target: https://github.com/cosmos/chain-registry/archive/refs/heads/master.zip
-	bfs := os.DirFS(registryDir)
-	rerr = fs.WalkDir(bfs, ".", func(path string, d fs.DirEntry, err error) (rerr error) {
-		if err != nil {
-			return err
-		}
-		if !strings.HasSuffix(d.Name(), "chain.json") {
-			return nil
-		}
-
-		f, err := bfs.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-
-		blob, err := io.ReadAll(f)
-		cs := new(ChainSchema)
-		if err := json.Unmarshal(blob, cs); err != nil {
-			return err
-		}
-		if cs.Codebase == nil {
-			logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
-				"path": path,
-			}).Error("No codebase")
-			return nil
-		}
-		goModURL := cs.Codebase.GitRepoURL
-
-		gu, err := url.Parse(goModURL)
-		if err != nil {
-			logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
-				"path":         path,
-				"git_repo_url": goModURL,
-			}).Error("failed to URL Parse the Github repo URL from the registry")
-			return nil
-		}
-
-		// This is what rawGoModURL should look like at the very end:
-		//      https://raw.githubusercontent.com/Agoric/ag0/agoric-3.1/go.mod
-		orgRepo := strings.TrimSuffix(gu.Path, "/")
-
-		// Derive a cancellable context from the prevailing one
-		// so that an exit will end all inflight HTTP requests.
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
-
-		client := &http.Client{Transport: fr.rt}
-
-		seedCS := *cs
-
-		type csErr struct {
-			cs  *ChainSchema
-			url string
-			err error
-		}
-		frCh := make(chan *csErr, 1)
-		go func() {
-			defer close(frCh)
-
-			rawGoModURL := &url.URL{
-				Scheme: "https",
-				Host:   "raw.githubusercontent.com",
-				Path:   orgRepo + "/" + cs.Codebase.RecommendedVersion + "/go.mod",
-			}
-			url := rawGoModURL.String()
-			cs, err := fr.retrieveModFile(ctx, client, url, seedCS)
-			frCh <- &csErr{
-				url: url,
-				cs:  cs,
-				err: err,
-			}
-		}()
-
-		latestCh := make(chan *csErr, 1)
-		go func() (cs *ChainSchema, err error) {
-			var uri string
-
-			defer func() {
-				latestCh <- &csErr{cs: cs, err: err, url: uri}
-				close(latestCh)
-			}()
-
-			// 1. Retrieve the default branch for the repository.
-			defaultBranch, err := fr.defaultBranchForRepo(ctx, orgRepo, cs.Codebase.GitRepoURL)
-			if err != nil {
-				return nil, err
-			}
-
-			// 2. Finally fetch the default branch's go.mod file.
-			latestGoModURL := &url.URL{
-				Scheme: "https",
-				Host:   "raw.githubusercontent.com",
-				Path:   orgRepo + "/" + defaultBranch + "/go.mod",
-			}
-			uri = latestGoModURL.String()
-			return fr.retrieveModFile(ctx, client, uri, seedCS)
-		}()
-
-		faceValueCSE := <-frCh
-		if err := faceValueCSE.err; err != nil {
-			logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
-				"org_repo": orgRepo,
-			}).Error("failed to version from the chain-registry")
-			return nil
-		}
-		if faceValueCSE.cs == nil {
-			return nil
-		}
-
-		lcse := <-latestCh
-		if lcse.err != nil {
-			// Some repos don't even exist like:
-			//      https://github.com/AIOZNetwork/go-aioz
-			// but if we can't get the latest schema we shouldn't error.
-			logrus.WithContext(ctx).WithError(lcse.err).WithFields(logrus.Fields{
-				"org_repo": orgRepo,
-			}).Error("failed to get the latest/live go.mod")
-		}
-
-		// Replace the authoritative ChainSchema with
-		// the version retrieved from the ChainRegistry
-		// at face value.
-		cs = faceValueCSE.cs
-		if lcse != nil && lcse.cs != nil && !reflect.DeepEqual(cs, lcse.cs) {
-			cs.Latest = lcse.cs
-		}
-		csL = append(csL, cs)
-		return nil
-	})
-
-	return
 }
 
 func (fr *fetcher) retrieveModFile(ctx context.Context, client *http.Client, url string, seed ChainSchema) (*ChainSchema, error) {
@@ -520,6 +309,9 @@ func (fr *fetcher) retrieveModFile(ctx context.Context, client *http.Client, url
 }
 
 func (fr *fetcher) defaultBranchForRepo(ctx context.Context, orgRepo, repoURL string) (string, error) {
+
+	// Otherwise the repo really exists on Github publicly.
+
 	// 1. A problem we encounter is that we run into API quota limits
 	// when we invoke the https://api.github.com/repos/{org}/{repo}/ link
 	// thus:
@@ -537,11 +329,22 @@ func (fr *fetcher) defaultBranchForRepo(ctx context.Context, orgRepo, repoURL st
 	}
 	defer os.RemoveAll(tmpDir)
 
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
 	cmd := exec.CommandContext(ctx,
 		"git", "clone", "--no-checkout", "--filter=blob:limit=40", repoURL, tmpDir,
 	)
+	cmd.Env = append(os.Environ(),
+		// 1. Some of the repos provided in the chain-registry are non-existent like:
+		//  https://github.com/imversed/imversed
+		// and unfortunately git clone will keep password prompting us, hence
+		// instead we fail if Git prompts us for a password.
+		"GIT_TERMINAL_PROMPT=0",
+	)
+
 	if _, err := cmd.CombinedOutput(); err != nil {
-		return "", err
+		return "", fmt.Errorf("orgRepo failure: %q: %w", orgRepo, err)
 	}
 
 	// Now just read the .git/HEAD file.
@@ -558,48 +361,6 @@ func (fr *fetcher) defaultBranchForRepo(ctx context.Context, orgRepo, repoURL st
 	i := strings.LastIndex(splits[1], "/")
 	refsOfHead := strings.TrimSpace(splits[1][i+1:])
 	return refsOfHead, nil
-}
-
-func (fr *fetcher) githubFetchDefaultBranchForRepo(ctx context.Context, client *http.Client, orgRepo string) (string, error) {
-	// 1. Firstly check if the repository was cached or not.
-	fr.mu.Lock()
-	repo, ok := fr.repoCache[orgRepo]
-	fr.mu.Unlock()
-
-	if ok && repo != nil {
-		return repo.GetDefaultBranch(), nil
-	}
-
-	apiURL := "https://api.github.com/repos" + orgRepo
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	res, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	blob, err := io.ReadAll(res.Body)
-	res.Body.Close()
-	if res.StatusCode < 200 || res.StatusCode > 299 {
-		errStr := res.Status
-		if len(blob) != 0 {
-			errStr = string(blob)
-		}
-		return "", errors.New(errStr)
-	}
-
-	repo = new(github.Repository)
-	if err := json.Unmarshal(blob, repo); err != nil {
-		return "", err
-	}
-
-	fr.mu.Lock()
-	defer fr.mu.Unlock()
-	fr.repoCache[orgRepo] = repo
-
-	return repo.GetDefaultBranch(), nil
 }
 
 var reTargets = regexp.MustCompile("cosmos-sdk|tendermint/tendermint|/ibc")
