@@ -59,7 +59,7 @@ func TestFetchChainData(t *testing.T) {
 			return
 		}
 
-		if strings.Contains(req.URL.Path, "Agoric/ag0/main/go.mod") {
+		if false && strings.Contains(req.URL.Path, "Agoric/ag0/main/go.mod") {
 			rw.Write(testdataLatestGoMod)
 			return
 		}
@@ -102,38 +102,6 @@ func TestFetchChainData(t *testing.T) {
 			TendermintVersion: "v0.34.13@github.com/tendermint/tendermint",
 			CosmosSDKVersion:  "v0.44.2-alpha.agoric.gaiad.1@github.com/agoric-labs/cosmos-sdk",
 			IBCVersion:        "v1.2.0",
-			Latest: &ChainSchema{
-				ChainName:    "agoric",
-				NetworkType:  "mainnet",
-				Status:       "live",
-				PrettyName:   "Agoric",
-				Bech32Prefix: "agoric",
-				Codebase: &Codebase{
-					GitRepoURL:         "https://github.com/Agoric/ag0/",
-					RecommendedVersion: "agoric-3.1",
-					CompatibleVersions: []string{"agoric-3.1"},
-				},
-				IsMainnet:         "yes",
-				TendermintVersion: "v0.37.13@github.com/tendermint/tendermint",
-				CosmosSDKVersion:  "v0.44.2-alpha.agoric.gaiad.1@github.com/agoric-labs/cosmos-sdk",
-				IBCVersion:        "v1.2.0",
-			},
-		},
-		{
-			ChainName:    "aioz",
-			NetworkType:  "mainnet",
-			Status:       "live",
-			PrettyName:   "AIOZ Network",
-			Bech32Prefix: "aioz",
-			Codebase: &Codebase{
-				GitRepoURL:         "https://github.com/AIOZNetwork/go-aioz",
-				RecommendedVersion: "v1.2.0",
-				CompatibleVersions: []string{"v1.2.0"},
-			},
-			IsMainnet:         "yes",
-			TendermintVersion: "v0.34.13@github.com/tendermint/tendermint",
-			CosmosSDKVersion:  "v0.44.2-alpha.agoric.gaiad.1@github.com/agoric-labs/cosmos-sdk",
-			IBCVersion:        "v1.2.0",
 		},
 		{
 			ChainName:    "akash",
@@ -151,6 +119,22 @@ func TestFetchChainData(t *testing.T) {
 			CosmosSDKVersion:  "v0.44.2-alpha.agoric.gaiad.1@github.com/agoric-labs/cosmos-sdk",
 			IBCVersion:        "v1.2.0",
 		},
+		{
+			ChainName:    "arkh",
+			NetworkType:  "mainnet",
+			Status:       "live",
+			PrettyName:   "Arkhadian",
+			Bech32Prefix: "arkh",
+			Codebase: &Codebase{
+				GitRepoURL:         "https://github.com/vincadian/arkh-blockchain",
+				RecommendedVersion: "v1.0.0",
+				CompatibleVersions: []string{"v1.0.0"},
+			},
+			IsMainnet:         "yes",
+			TendermintVersion: "v0.34.13@github.com/tendermint/tendermint",
+			CosmosSDKVersion:  "v0.44.2-alpha.agoric.gaiad.1@github.com/agoric-labs/cosmos-sdk",
+			IBCVersion:        "v1.2.0",
+		},
 	}
 
 	if diff := cmp.Diff(got[:3], wantFirst3); diff != "" {
@@ -159,15 +143,31 @@ func TestFetchChainData(t *testing.T) {
 
 	wantLast3 := []*ChainSchema{
 		{
-			ChainName:    "thorchain",
+			ChainName:    "tgrade",
 			NetworkType:  "mainnet",
 			Status:       "live",
-			PrettyName:   "THORChain",
-			Bech32Prefix: "thor",
+			PrettyName:   "Tgrade",
+			Bech32Prefix: "tgrade",
 			Codebase: &Codebase{
-				GitRepoURL:         "https://gitlab.com/thorchain/thornode",
-				RecommendedVersion: "chaosnet-multichain",
-				CompatibleVersions: []string{"chaosnet-multichain"},
+				GitRepoURL:         "https://github.com/confio/tgrade",
+				RecommendedVersion: "v1.0.1",
+				CompatibleVersions: []string{"v1.0.1"},
+			},
+			IsMainnet:         "yes",
+			TendermintVersion: "v0.34.13@github.com/tendermint/tendermint",
+			CosmosSDKVersion:  "v0.44.2-alpha.agoric.gaiad.1@github.com/agoric-labs/cosmos-sdk",
+			IBCVersion:        "v1.2.0",
+		},
+		{
+			ChainName:    "theta",
+			NetworkType:  "mainnet",
+			Status:       "live",
+			PrettyName:   "Theta Testnet",
+			Bech32Prefix: "theta",
+			Codebase: &Codebase{
+				GitRepoURL:         "https://github.com/cosmos/gaia",
+				RecommendedVersion: "v7.0.2",
+				CompatibleVersions: []string{"v7.0.2"},
 			},
 			IsMainnet:         "yes",
 			TendermintVersion: "v0.34.13@github.com/tendermint/tendermint",
